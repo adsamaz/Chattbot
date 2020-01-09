@@ -1,0 +1,2 @@
+[DEFAULT]
+apitoken = (telegram apitoken)

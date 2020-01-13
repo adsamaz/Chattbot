@@ -19,13 +19,19 @@ import re
 import traceback
 from telegram import InlineQueryResultArticle, ParseMode, \
     InputTextMessageContent
-from telegram.ext import Updater, CommandHandler
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 import logging
 import urllib
 import http.cookiejar
 import configparser
+import fasttext
+import sentiment as snet
+import randrev as rr 
 
 class Bot:
+
+    reviewMode = False
+
     def __init__(self):
         logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
                             level=logging.INFO)
@@ -33,68 +39,80 @@ class Bot:
         self.config = configparser.ConfigParser()
         self.config.read("config.txt")
 
+        self.model = fasttext.load_model("../fasttext/trained_model.bin")
+
         # Create the Updater and pass it your bot's token.
         self.updater = Updater(self.config["DEFAULT"]['apitoken'])
         # Get the dispatcher to register handlers
         self.dp = self.updater.dispatcher
         self.dp.add_handler(CommandHandler("start", self.standardStart))
         self.dp.add_handler(CommandHandler("help", self.standardHelp))
+        self.dp.add_handler(CommandHandler("score", self.commandScore, pass_args=True))
+        self.dp.add_handler(MessageHandler(Filters.text, self.messageCheck))
         # Log all errors
         self.dp.add_error_handler(self.error)
+
+        # Init neural network
+        self.nn = snet.Score(self)
+
+        # Init random review
+        self.rr = rr.RandReview(self)
 
     def standardStart(self, bot, update):
         update.message.reply_text('The best bot in the whole world type "/help" to learn more')
 
     def standardHelp(self, bot, update):
-        update.message.reply_text(self.generateHelp())
+        update.message.reply_text('Say hello (if you want), then leave a review, or get a random review by simply telling me what you want to do.')
         
-    def loadPlugins(self):
-        self.help = {}
-        
-        self.plugins = []
-        try:
-            for i in __import__('plugins').__all__:
-                try:
-                    plugin = __import__('plugins.%s' % i, fromlist=[None])
-                    try:
-                        config = self.config["plugins.%s" % i]
-                        print("config!!")
-                    except KeyError:
-                        config = []
-
-                    if "mainclass" in dir(plugin):
-                        print("Loading", i)
-                        obj = plugin.mainclass(self, config)
-                        self.plugins.append(obj)
-                except:
-                    traceback.print_exc()
-        except:
-            traceback.print_exc()
-
     def registerCommand(self,name,help,func,args = False, user_data=False):
         self.dp.add_handler(CommandHandler(name, func, pass_args=args, pass_user_data=user_data))
-        self.help[name] = help
+        # self.help[name] = help
     
-    def generateHelp(self):
-        hStr = ""
-        for key in self.help:
-            hStr = hStr + str(key) + " - " + self.help[key] + "\n"
-        return hStr
+    def commandScore(self, bot, update, args):
+        self.nn.handleScore(self.nn, update, args)
     
-    def error(self,bot, update, error):
+    def predict(self, text):
+        a = self.model.predict(text)
+        label, confidence = ("__label__nonsense", a[1][0]) if a[1][0] < 0.6 else (a[0][0], a[1][0])
+        return (label, confidence)
+
+    def messageCheck(self, bot, update):
+        inMessage = update.message.text.lower()
+        if (self.reviewMode):
+            score = self.nn.messageScore(self.nn, inMessage)
+            print(score[0])
+            if (score[0] > 0.75):
+                update.message.reply_text('Glad you liked it!')
+            elif (score[0] > 0.3):
+                update.message.reply_text('Thank you for the review! We will keep improving!')
+            else:
+                update.message.reply_text('Sorry you did not like it. We will do better next time!')
+            self.reviewMode = False
+            return
+        label, confidence = self.predict(inMessage)
+        if ('hi' in label):
+            update.message.reply_text('Hi! I am Chatbot Eta. I love video game reviews.')
+        elif ('info' in label):
+            update.message.reply_text('Here is a random review for you!')
+            update.message.reply_text(self.rr.getRandomReview())
+        elif ('review' in label):
+            update.message.reply_text('Okay, please write your review.')
+            self.reviewMode = True
+        else:
+            update.message.reply_text('Sorry, I do not understand that. Please try again.')
+    
+    def error(self, bot, update, error):
         self.logger.warn('Update "%s"\n caused error "%s"' % (update, error))
 
     def run(self):
         print ("telegram bot is running")
-        print (self.generateHelp())
         self.updater.start_polling()
-        #ctrl-c to quit 
+        ## ctrl-c to quit 
         self.updater.idle()
 
 def main():
     b = Bot()
 
-    b.loadPlugins()
     b.run()
     return 1
 
